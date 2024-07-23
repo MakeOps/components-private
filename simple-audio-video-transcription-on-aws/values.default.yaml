@@ -1,0 +1,32 @@
+# Language to pass to StartTranscriptionJob
+transcribeLocale: "en-ZA"
+
+# Toggle to enable CORS on S3 Upload Bucket
+s3CorsEnabled: true
+
+# If S3 cors is enabled, set the following allowed origins
+s3CorsOrigins:
+- http://localhost:5173
+
+# Configures the mechanism to determine the user that uploaded the file. Available values: token, user, none
+# token - supply a cognito access token jwt as 'Token' in the file metadata, sub will be extracted
+# user  - supply a user id as the 'User' in the file metadata to store against that user
+# none  - user ID will default to 'unknown'
+s3UserInfo: token
+
+# Toggle deployment of the API stack
+apiEnabled: true
+
+# Define the auth method, allowed values: cognito, none
+apiAuthMethod: cognito
+
+# If apiAuthMethod = 'cognito' then provide the UserPoolId and AppClientId to add authentication to API Gateway.
+apiCognitoUserPoolId: <CognitoUserPoolId>
+apiCognitoAppClientId: <CognitoAppClientId>
+
+# Toggle if Cors are set for the API Gateway endpoint
+apiCorsEnabled: true
+
+# If apiCorsEnabled is true then the following origins are set for API Gateway.
+apiCorsOrigins:
+- http://localhost:5173
