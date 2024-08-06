@@ -1,0 +1,37 @@
+{
+  "version": "2.0",
+  "routeKey": "$default",
+  "rawPath": "/webhook",
+  "rawQueryString": "",
+  "headers": {
+    "accept": "*/*",
+    "accept-encoding": "gzip, deflate",
+    "content-length": "0",
+    "host": "example.execute-api.region.amazonaws.com",
+    "user-agent": "UserAgent/X.X.X",
+    "x-amzn-trace-id": "Root=1-xxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx",
+    "x-forwarded-for": "xxx.xxx.xxx.xxx",
+    "x-forwarded-port": "443",
+    "x-forwarded-proto": "https"
+  },
+  "requestContext": {
+    "accountId": "123456789012",
+    "apiId": "exampleapi",
+    "domainName": "example.execute-api.region.amazonaws.com",
+    "domainPrefix": "exampleapi",
+    "http": {
+      "method": "POST",
+      "path": "/webhook",
+      "protocol": "HTTP/1.1",
+      "sourceIp": "xxx.xxx.xxx.xxx",
+      "userAgent": "UserAgent/X.X.X"
+    },
+    "requestId": "ExampleRequestId=",
+    "routeKey": "$default",
+    "stage": "$default",
+    "time": "DD/MMM/YYYY:HH:MM:SS +0000",
+    "timeEpoch": 1234567890123
+  },
+  "body": "{\"name\": \"makeops\", \"date\": \"2024-08-06\"}",
+  "isBase64Encoded": false
+}
