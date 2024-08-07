@@ -18,6 +18,8 @@ This project provides a deployable component written in AWS CDK, using Python as
 
 **Poetry Python Package Manager** for package management we've made use of [Poetry](https://python-poetry.org/) because we at MakeOps it's our standard practice.
 
+**Security** The endpoint that is deployed is an AWS API gateway endpoint. These endpoints automatically have an HTTPS certificate attached to ensure that communication between the client or application and the server is encrypted.
+
 ## Architecture
 
 The architecture use API Gateway and AWS Lambda to create an python webhook listener deployed in AWS.
@@ -154,6 +156,41 @@ If you're done playing around with this component, delete it using the cdk destr
 
 ```bash
 $ cdk destroy --all
+```
+
+## Next Steps
+
+Once you've got the webhook deployed you can start to update the python code inside the `handler.py` file.
+
+As a starting point, try connect the webhook endpoint into an application that emits webhooks and the get an event to trigger. You can view the logs to get an idea of the structure of the webhook event, then create code to handle the event in a customized way.
+
+## Troubleshooting
+
+### Function Timeouts
+
+When your webhook handler starts to get more complex, you may start to see errors due to timeouts. This is because the AWS lambda function has been configured with a default timeout of 3 seconds.
+
+If you start to see timeouts there are 2 options:
+
+1. Increase the timeout of the AWS Lambda function (default is 3 seconds) - this allows more time for the function to finish executing. This will affect the cost of your lambda function executions.
+2. Increase the memory for the AWS Lambda function (default is 128) - this will allow more memory for the function so the code will execute faster.
+
+```ts
+const webhookHandler = new DockerImageFunction(this, 'WebhookFunction', {
+  code: DockerImageCode.fromImageAsset(join(__dirname, 'code'), {
+    entrypoint: ["/usr/local/bin/python", "-m", "awslambdaric"],
+    cmd: ["handler.webhook_handler"]
+  }),
+  logRetention: RetentionDays.TWO_WEEKS,
+  timeout: cdk.Duration.seconds(10),   // Increase the timeout of the webhook
+  memorySize: 1024  // Increases the memory size for the webhook
+})
+```
+
+To update the component you can run the deploy function again.
+
+```bash
+$ cdk deploy --all
 ```
 
 ## Support
