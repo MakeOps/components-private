@@ -1,0 +1,34 @@
+
+pipelineName: SampleDeploymentPipeline
+
+source:
+  # Source of the code is github
+  github:
+    # Owner of the repo i.e. for github.com/owner/repo
+    owner:          MakeOps
+    # Repo name i.e. for github.com/owner/repo
+    repo:           sample-image-build
+    # Arn of the connection to use to retrieve files from github
+    connectionArn:  arn:aws:codeconnections:eu-west-1:375479154925:connection/0fe43ae3-0ffb-406d-b094-9a9e81a91dba
+    # Branch to use when pulling config
+    branch:         main
+    # Whether to trigger the pipeline when new code is pushed to the repo.
+    triggerOnPush:  true
+    # Working Directory for the build steps
+
+workDir: ''
+
+destination:
+  ecr:
+    # Repo Name for the destination.
+    repoName: sample/ecr-destination
+    # If the destination exists or not
+    exists: false
+
+    # How to tag the output images:
+    # latest - tag with latest
+    # commit - tag with full commit hash
+    # commit-short - tag with truncated commit hash
+    tagRules:
+      - latest
+      - commit-short

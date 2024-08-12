@@ -1,5 +1,5 @@
 {
-  "app": "npx ts-node --prefer-ts-exts simple-multiarch-container-build-pipelines.ts",
+  "app": "npx ts-node --prefer-ts-exts simple-multi-arch-container-build-pipelines.ts",
   "watch": {
     "include": [
       "**"
