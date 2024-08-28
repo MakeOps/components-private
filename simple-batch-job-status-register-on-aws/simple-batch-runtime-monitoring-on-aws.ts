@@ -89,7 +89,8 @@ export class SimpleBatchRuntimeMonitoringOnAwsStack extends cdk.Stack {
         'ami_id': JsonPath.stringAt("$.detail.responseElements.containerInstance.attributes[?(@.name=='ecs.ami-id')].value"),
         'cpu': JsonPath.stringAt("$.detail.responseElements.containerInstance.registeredResources[?(@.name=='CPU')].integerValue"),
         'memory': JsonPath.stringAt("$.detail.responseElements.containerInstance.registeredResources[?(@.name=='MEMORY')].integerValue"),
-        'monitoring_enabled': JsonPath.stringAt("$.describeInstances.Reservations[0].Instances[0].Tags[?(@.Key=='RuntimeMonitoring')].Value")
+        'monitoring_enabled': JsonPath.stringAt("$.describeInstances.Reservations[0].Instances[0].Tags[?(@.Key=='RuntimeMonitoring')].Value"),
+        'launch_time': JsonPath.stringAt("$.describeInstances.Reservations[0].Instances[0].LaunchTime")
       }
     })
 
@@ -107,10 +108,7 @@ export class SimpleBatchRuntimeMonitoringOnAwsStack extends cdk.Stack {
         'last_event_time': DynamoAttributeValue.fromString(JsonPath.stringAt('$.detail.eventTime')),
         'last_event_type': DynamoAttributeValue.fromString(JsonPath.stringAt('$.detail.eventName')),
         'ecs_cluster': DynamoAttributeValue.fromString(JsonPath.stringAt('$.detail.requestParameters.cluster')),
-        '#tagetEventType': DynamoAttributeValue.fromString(JsonPath.stringAt('$.detail.eventTime'))
-      },
-      expressionAttributeNames: {
-        '#targetEventType': JsonPath.stringAt('$.detail.eventName')
+        'launch_time': DynamoAttributeValue.fromString(JsonPath.stringAt('$.launch_time'))
       }
     }).next(succeed)
 
