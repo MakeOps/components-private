@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "makeops-batch-runtime-monitor-code"
+version = "0.1.0"
+authors = ["Jason Forte <hello@jforte.me"]
+description = ""
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.10"
+boto3 = "^1.35.0"
+simplejson = "^3.19.3"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
