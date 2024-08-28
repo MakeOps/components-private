@@ -152,7 +152,6 @@ def query_for_task_details(user, job_id):
         FilterExpression=Attr('job_id').eq(job_id),
         ScanIndexForward=False,
         ProjectionExpression='pk, sk, task_token, event_time',
-        Limit=1
     )
 
     if len(res['Items']) == 0:
