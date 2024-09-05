@@ -2,7 +2,7 @@
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { AttributeType, TableV2 } from 'aws-cdk-lib/aws-dynamodb';
+import { AttributeType, ITableV2, TableV2 } from 'aws-cdk-lib/aws-dynamodb';
 import { InstanceClass, Vpc } from 'aws-cdk-lib/aws-ec2';
 import { EcsEc2ContainerDefinition, EcsJobDefinition, JobQueue, ManagedEc2EcsComputeEnvironment } from 'aws-cdk-lib/aws-batch';
 import { ContainerImage } from 'aws-cdk-lib/aws-ecs';
@@ -11,7 +11,7 @@ import { Rule } from 'aws-cdk-lib/aws-events';
 import { Choice, Condition, DefinitionBody, JsonPath, Pass, StateMachine, StateMachineType, Succeed } from 'aws-cdk-lib/aws-stepfunctions';
 import { SfnStateMachine } from 'aws-cdk-lib/aws-events-targets';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
-import { CallAwsService, DynamoAttributeValue, DynamoPutItem } from 'aws-cdk-lib/aws-stepfunctions-tasks';
+import { CallAwsService, DynamoAttributeValue, DynamoGetItem, DynamoPutItem } from 'aws-cdk-lib/aws-stepfunctions-tasks';
 
 export class SampleTestCase extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -59,6 +59,13 @@ export class SimpleBatchRuntimeMonitoringOnAwsStack extends cdk.Stack {
       }
     })
 
+    this.createInstanceMonitors(metadataTable)
+    this.createJobMonitors(metadataTable)
+
+  }
+
+  createInstanceMonitors(metadataTable: ITableV2) {
+
     // Instance Management State Machine
     const instanceManagementRule = new Rule(this, 'InstanceManagementEvent', {
       eventPattern: {
@@ -97,7 +104,7 @@ export class SimpleBatchRuntimeMonitoringOnAwsStack extends cdk.Stack {
     const stepPutItem = new DynamoPutItem(this, 'StepPutItem', {
       table: metadataTable,
       item: {
-        'pk': DynamoAttributeValue.fromString(JsonPath.stringAt('$.detail.responseElements.containerInstance.containerInstanceArn')),
+        'pk': DynamoAttributeValue.fromString(JsonPath.format('{}:{}', JsonPath.stringAt('$.detail.responseElements.containerInstance.containerInstanceArn'), JsonPath.stringAt('$.detail.eventName'))),
         'sk': DynamoAttributeValue.fromString('instance'),
         'availability_zone': DynamoAttributeValue.fromString(JsonPath.arrayGetItem(JsonPath.stringAt('$.availability_zone'), 0)),
         'instance_type': DynamoAttributeValue.fromString(JsonPath.arrayGetItem(JsonPath.stringAt('$.instance_type'), 0)),
@@ -151,6 +158,115 @@ export class SimpleBatchRuntimeMonitoringOnAwsStack extends cdk.Stack {
     instanceManagementRule.addTarget(new SfnStateMachine(sfn))
 
   }
+
+  createJobMonitors(metadataTable: ITableV2) {
+
+    const jobManagementRule = new Rule(this, 'JobManagementEvent', {
+      eventPattern: {
+        source: ['aws.batch'],
+        detailType: ['Batch Job State Change'],
+      }
+    })
+
+    const succeed = new Succeed(this, 'JobStateChangeSuccess')
+
+    const stepPass = new Pass(this, 'JobStateChangeStepPass', {
+      parameters: {
+        'job_name': JsonPath.stringAt('$.detail.jobName'),
+        'job_id': JsonPath.stringAt('$.detail.jobId'),
+        'job_queue': JsonPath.stringAt('$.detail.jobQueue'),
+        'region': JsonPath.stringAt('$.region'),
+        'job_definition': JsonPath.stringAt('$.detail.jobDefinition'),
+        'job_status': JsonPath.stringAt('$.detail.status'),
+        'last_event_type': JsonPath.stringAt('$.detail.status'),
+        'last_event_time': JsonPath.stringAt('$.time'),
+        'cpu': JsonPath.stringAt("$.detail.container.resourceRequirements[?(@.type=='VCPU')].value"),
+        'memory': JsonPath.stringAt("$.detail.container.resourceRequirements[?(@.type=='MEMORY')].value"),
+        'detail': JsonPath.objectAt('$.detail'),
+        'is_fargate': JsonPath.arrayContains(JsonPath.listAt('$.detail.platformCapabilities'), 'FARGATE'),
+        'is_ec2': JsonPath.arrayContains(JsonPath.listAt('$.detail.platformCapabilities'), 'EC2'),
+      },
+      resultPath: '$.subset'
+    })
+
+    const stepUpdateFinishedJob = new Pass(this, 'UpdateFinishedJob')
+
+    const pathPlatformEC2 = new DynamoGetItem(this, 'StepPlatformEC2', {
+      table: metadataTable,
+      key: {
+        'pk': DynamoAttributeValue.fromString(JsonPath.format('{}:{}', JsonPath.stringAt('$.subset.detail.container.containerInstanceArn'), 'RegisterContainerInstance')),
+        'sk': DynamoAttributeValue.fromString('instance'),
+      },
+      resultPath: '$.instance'
+    })
+
+    pathPlatformEC2
+      .next(new DynamoPutItem(this, 'StepPutItemEC2', {
+        table: metadataTable,
+        item: {
+          'pk': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_id')),
+          'sk': DynamoAttributeValue.fromString('job'),
+          'task_arn': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.detail.container.taskArn')),
+          'job_name': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_name')),
+          'started_at': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.last_event_time')),
+          'job_status': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_status')),
+          'job_queue': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_queue')),
+          'vcpu': DynamoAttributeValue.numberFromString(JsonPath.format('{}', JsonPath.arrayGetItem(JsonPath.stringAt('$.subset.cpu'), 0))),
+          'memory': DynamoAttributeValue.numberFromString(JsonPath.format('{}', JsonPath.arrayGetItem(JsonPath.stringAt('$.subset.memory'), 0))),
+          'container_instance_arn': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.detail.container.containerInstanceArn')),
+          // 'purchase_option': DynamoAttributeValue.fromString(JsonPath.stringAt('$.instance.Item.purchase_option.S')),
+          'instance_type': DynamoAttributeValue.fromString(JsonPath.stringAt('$.instance.Item.instance_type.S')),
+          'availability_zone': DynamoAttributeValue.fromString(JsonPath.stringAt('$.instance.Item.availability_zone.S')),
+          'instance_id': DynamoAttributeValue.fromString(JsonPath.stringAt('$.instance.Item.instance_id.S')),
+          'log_stream': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.detail.container.logStreamName'))
+        },
+        comment: 'Add the details of the job and the instance to the table',
+      }))
+      .next(succeed)
+
+    const pathPlatformFargate = new Pass(this, 'StepPlatformFargate', {}).next(succeed)
+
+    const stepPlatform = new Choice(this, 'StepPlatform', { comment: 'Check the platform of the job' })
+    stepPlatform
+    .when(
+      Condition.booleanEquals('$.subset.is_fargate', true),
+      pathPlatformFargate
+    ).otherwise(pathPlatformEC2)
+
+    const stepStatusDefault = new Choice(this, 'ChoiceStatusDefault')
+
+    stepStatusDefault
+      .when(
+        Condition.or(
+          Condition.stringEquals('$.subset.last_event_type', 'SUCCEEDED'),
+          Condition.or(Condition.and(
+            Condition.stringEquals('$.subset.last_event_type', 'FAILED'),
+            Condition.isPresent('$.subset.detail.container.taskArn')
+          ))
+        ),
+        stepUpdateFinishedJob,
+        { comment: 'Check if the job status is completed states (SUCCEEDED or FAILED)' }
+      )
+      .when(
+        Condition.stringEquals('$.subset.last_event_type', 'RUNNING'),
+        stepPlatform,
+      )
+      .otherwise(succeed)
+
+    stepPass.next(stepStatusDefault)
+
+    const jobStateStateMachine = new StateMachine(this, 'JobStateChangeFn', {
+      definitionBody: DefinitionBody.fromChainable(stepPass),
+      stateMachineType: StateMachineType.STANDARD,
+      logs: {
+        destination: new LogGroup(this, 'JobStateChangeFnLogs', { retention: RetentionDays.ONE_WEEK })
+      }
+    })
+
+    jobManagementRule.addTarget(new SfnStateMachine(jobStateStateMachine))
+
+  }
+
 }
 
 const app = new cdk.App();
