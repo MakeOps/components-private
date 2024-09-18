@@ -22,9 +22,9 @@ export class SampleTestCase extends cdk.Stack {
 
     const computeEnvironment = new ManagedEc2EcsComputeEnvironment(this, 'MyECSComputeEnvironment', {
       vpc,
-      minvCpus: 0,
+      minvCpus: 1,
       maxvCpus: 8,
-      instanceClasses: [InstanceClass.M6G],
+      instanceClasses: [InstanceClass.M5],
       useOptimalInstanceClasses: false,
     })
 
@@ -134,7 +134,9 @@ export class SimpleBatchRuntimeMonitoringOnAwsStack extends cdk.Stack {
         'cpu': JsonPath.stringAt("$.detail.responseElements.containerInstance.registeredResources[?(@.name=='CPU')].integerValue"),
         'memory': JsonPath.stringAt("$.detail.responseElements.containerInstance.registeredResources[?(@.name=='MEMORY')].integerValue"),
         'monitoring_enabled': JsonPath.stringAt("$.describeInstances.Reservations[0].Instances[0].Tags[?(@.Key=='RuntimeMonitoring')].Value"),
-        'launch_time': JsonPath.stringAt("$.describeInstances.Reservations[0].Instances[0].LaunchTime")
+        'launch_time': JsonPath.stringAt("$.describeInstances.Reservations[0].Instances[0].LaunchTime"),
+        'arch': JsonPath.stringAt("$.detail.responseElements.containerInstance.attributes[?(@.name=='ecs.cpu-architecture')].value"),
+        'os': JsonPath.stringAt("$.detail.responseElements.containerInstance.attributes[?(@.name=='ecs.os-type')].value"),
       }
     })
 
@@ -152,7 +154,9 @@ export class SimpleBatchRuntimeMonitoringOnAwsStack extends cdk.Stack {
         'last_event_time': DynamoAttributeValue.fromString(JsonPath.stringAt('$.detail.eventTime')),
         'last_event_type': DynamoAttributeValue.fromString(JsonPath.stringAt('$.detail.eventName')),
         'ecs_cluster': DynamoAttributeValue.fromString(JsonPath.stringAt('$.detail.requestParameters.cluster')),
-        'launch_time': DynamoAttributeValue.fromString(JsonPath.stringAt('$.launch_time'))
+        'launch_time': DynamoAttributeValue.fromString(JsonPath.stringAt('$.launch_time')),
+        'arch': DynamoAttributeValue.fromString(JsonPath.arrayGetItem(JsonPath.stringAt('$.arch'), 0)),
+        'os': DynamoAttributeValue.fromString(JsonPath.arrayGetItem(JsonPath.stringAt('$.os'), 0))
       }
     }).next(succeed)
 
@@ -254,56 +258,50 @@ export class SimpleBatchRuntimeMonitoringOnAwsStack extends cdk.Stack {
     stepUpdateFinishedJob
       .next(succeed)
 
-    const pathPlatformEC2 = new DynamoGetItem(this, 'StepPlatformEC2', {
-      table: metadataTable,
-      key: {
-        'pk': DynamoAttributeValue.fromString(JsonPath.format('{}:{}', JsonPath.stringAt('$.subset.detail.container.containerInstanceArn'), 'RegisterContainerInstance')),
-        'sk': DynamoAttributeValue.fromString('instance'),
-      },
-      resultPath: '$.instance'
-    })
+    const fargateSteps = this.createStepsFargateJob(metadataTable)
 
-    pathPlatformEC2
-      .next(new DynamoPutItem(this, 'StepPutItemEC2', {
-        table: metadataTable,
-        item: {
-          'pk': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_id')),
-          'sk': DynamoAttributeValue.fromString('job'),
-          'task_arn': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.detail.container.taskArn')),
-          'job_name': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_name')),
-          'started_at': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.last_event_time')),
-          'job_status': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_status')),
-          'job_queue': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_queue')),
-          'vcpu': DynamoAttributeValue.numberFromString(JsonPath.format('{}', JsonPath.arrayGetItem(JsonPath.stringAt('$.subset.cpu'), 0))),
-          'memory': DynamoAttributeValue.numberFromString(JsonPath.format('{}', JsonPath.arrayGetItem(JsonPath.stringAt('$.subset.memory'), 0))),
-          'container_instance_arn': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.detail.container.containerInstanceArn')),
-          // 'purchase_option': DynamoAttributeValue.fromString(JsonPath.stringAt('$.instance.Item.purchase_option.S')),
-          'instance_type': DynamoAttributeValue.fromString(JsonPath.stringAt('$.instance.Item.instance_type.S')),
-          'availability_zone': DynamoAttributeValue.fromString(JsonPath.stringAt('$.instance.Item.availability_zone.S')),
-          'instance_id': DynamoAttributeValue.fromString(JsonPath.stringAt('$.instance.Item.instance_id.S')),
-          'log_stream': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.detail.container.logStreamName'))
-        },
-        comment: 'Add the details of the job and the instance to the table',
-      }))
-      .next(succeed)
+    const ec2Steps = this.createStepsEC2Job(metadataTable)
 
+    // pathPlatformEC2
+    //   .next(new DynamoPutItem(this, 'StepPutItemEC2', {
+    //     table: metadataTable,
+    //     item: {
+    //       'pk': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_id')),
+    //       'sk': DynamoAttributeValue.fromString('job'),
+    //       'task_arn': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.detail.container.taskArn')),
+    //       'job_name': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_name')),
+    //       'started_at': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.last_event_time')),
+    //       'job_status': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_status')),
+    //       'job_queue': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_queue')),
+    //       'vcpu': DynamoAttributeValue.numberFromString(JsonPath.format('{}', JsonPath.arrayGetItem(JsonPath.stringAt('$.subset.cpu'), 0))),
+    //       'memory': DynamoAttributeValue.numberFromString(JsonPath.format('{}', JsonPath.arrayGetItem(JsonPath.stringAt('$.subset.memory'), 0))),
+    //       'container_instance_arn': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.detail.container.containerInstanceArn')),
+    //       // 'purchase_option': DynamoAttributeValue.fromString(JsonPath.stringAt('$.instance.Item.purchase_option.S')),
+    //       'instance_type': DynamoAttributeValue.fromString(JsonPath.stringAt('$.instance.Item.instance_type.S')),
+    //       'availability_zone': DynamoAttributeValue.fromString(JsonPath.stringAt('$.instance.Item.availability_zone.S')),
+    //       'instance_id': DynamoAttributeValue.fromString(JsonPath.stringAt('$.instance.Item.instance_id.S')),
+    //       'log_stream': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.detail.container.logStreamName'))
+    //     },
+    //     comment: 'Add the details of the job and the instance to the table',
+    //   }))
+    //   .next(succeed)
 
-    const fargateSteps = this.createStepsFargate(metadataTable)
+    // const pathPlatformFargate = fargateSteps.next(succeed)
 
-    const pathPlatformFargate = new Pass(this, 'StepPlatformFargate', {}).next(fargateSteps).next(succeed)
-
-    const stepEC2Pass = new Pass(this, 'StepEC2Pass', {
-      parameters: {
-        'cluster': JsonPath.arrayGetItem(JsonPath.stringSplit(JsonPath.arrayGetItem(JsonPath.stringSplit(JsonPath.stringAt('$.subset.detail.container.containerInstanceArn'), ':'), 5), '/'), 1),
-      }
-    }).next(pathPlatformEC2)
+    // const stepEC2Pass = new Pass(this, 'StepEC2Pass', {
+    //   parameters: {
+    //     'cluster': JsonPath.arrayGetItem(JsonPath.stringSplit(JsonPath.arrayGetItem(JsonPath.stringSplit(JsonPath.stringAt('$.subset.detail.container.containerInstanceArn'), ':'), 5), '/'), 1),
+    //   }
+    // }).next(ec2Steps)
 
     const stepPlatform = new Choice(this, 'StepPlatform', { comment: 'Check the platform of the job' })
+
     stepPlatform
-    .when(
-      Condition.booleanEquals('$.subset.is_fargate', true),
-      pathPlatformFargate
-    ).otherwise(stepEC2Pass)
+      .when(
+        Condition.booleanEquals('$.subset.is_fargate', true),
+        fargateSteps
+      )
+      .otherwise(ec2Steps)
 
     const stepStatusDefault = new Choice(this, 'ChoiceStatusDefault')
 
@@ -311,10 +309,12 @@ export class SimpleBatchRuntimeMonitoringOnAwsStack extends cdk.Stack {
       .when(
         Condition.or(
           Condition.stringEquals('$.subset.last_event_type', 'SUCCEEDED'),
-          Condition.or(Condition.and(
-            Condition.stringEquals('$.subset.last_event_type', 'FAILED'),
-            Condition.isPresent('$.subset.detail.container.taskArn')
-          ))
+          Condition.or(
+            Condition.and(
+              Condition.stringEquals('$.subset.last_event_type', 'FAILED'),
+              Condition.isPresent('$.subset.detail.container.taskArn')
+            )
+          )
         ),
         stepUpdateFinishedJob,
         { comment: 'Check if the job status is completed states (SUCCEEDED or FAILED)' }
@@ -339,10 +339,12 @@ export class SimpleBatchRuntimeMonitoringOnAwsStack extends cdk.Stack {
 
   }
 
-  createStepsFargate(metadataTable: ITableV2) {
+  createStepsFargateJob(metadataTable: ITableV2) {
 
     // Filter the event for specific variables to be updated in DDB.
-    const fargateFilter = new Pass(this, 'FargateFilter', {
+    const filter = new Pass(this, 'FargateFilter', {
+      stateName: 'Filter (Fargate Job)',
+      comment: 'Filter the inputs for a fargate job',
       parameters: {
         'cpu': JsonPath.stringAt("$.detail.container.resourceRequirements[?(@.type=='VCPU')].value"),
         'memory': JsonPath.stringAt("$.detail.container.resourceRequirements[?(@.type=='MEMORY')].value"),
@@ -353,25 +355,90 @@ export class SimpleBatchRuntimeMonitoringOnAwsStack extends cdk.Stack {
 
     // TODO: <jason> Add more details about the fargate lifecycle.
     const updateDDB = new DynamoUpdateItem(this, 'DDBPutItemFargate', {
-      stateName: 'Update DDB Fargate',
+      stateName: 'Update DDB (Fargate Job)',
       comment: 'Update the task status in DDB',
       table: metadataTable,
       key: {
         'pk': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_id')),
         'sk': DynamoAttributeValue.fromString('job')
       },
-      updateExpression: 'SET platform = :platform, job_status = :job_status, started_at = :started_at, cpu = :cpu, memory = :memory, runtime = :runtime',
+      updateExpression: 'SET platform = :platform, job_status = :job_status, started_at = :started_at, cpu = :cpu, memory = :memory, os = :os, arch = :arch',
       expressionAttributeValues: {
         ':platform': DynamoAttributeValue.fromString('FARGATE'),
         ':job_status': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_status')),
         ':started_at': DynamoAttributeValue.fromString(JsonPath.format('{}', JsonPath.stringAt('$.detail.startedAt'))),
         ':cpu': DynamoAttributeValue.numberFromString(JsonPath.format('{}', JsonPath.arrayGetItem(JsonPath.stringAt('$.fargateSubset.cpu'), 0))),
         ':memory': DynamoAttributeValue.numberFromString(JsonPath.format('{}', JsonPath.arrayGetItem(JsonPath.stringAt('$.fargateSubset.memory'), 0))),
-        ':runtime': DynamoAttributeValue.mapFromJsonPath('$.fargateSubset.runtime'),
+        ':os': DynamoAttributeValue.fromString(JsonPath.stringAt('$.fargateSubset.runtime.operatingSystemFamily')),
+        ':arch': DynamoAttributeValue.fromString(JsonPath.stringAt('$.fargateSubset.runtime.cpuArchitecture')),
       },
     })
 
-    return fargateFilter.next(updateDDB)
+    return filter.next(updateDDB)
+
+  }
+
+
+  createStepsEC2Job(metadataTable: ITableV2) {
+
+    const filter = new Pass(this, 'EC2Filter', {
+      stateName: 'Filter (EC2 Job)',
+      comment: 'Filter parameters for EC2 Jobs',
+      parameters: {
+        'cpu': JsonPath.stringAt("$.detail.container.resourceRequirements[?(@.type=='VCPU')].value"),
+        'memory': JsonPath.stringAt("$.detail.container.resourceRequirements[?(@.type=='MEMORY')].value"),
+        // 'arch': JsonPath.stringAt("$.detail.container.responseElements[?(@.type=='MEMORY')].value"),
+      },
+      resultPath: '$.ec2Subset'
+    })
+
+    const getEC2Instance = new DynamoGetItem(this, 'GetInstanceEC2', {
+      stateName: 'Get EC2 Instance Info',
+      comment: 'Fetch the EC2 Instance Info from DDB',
+      table: metadataTable,
+      key: {
+        'pk': DynamoAttributeValue.fromString(JsonPath.format('{}:{}', JsonPath.stringAt('$.subset.detail.container.containerInstanceArn'), 'RegisterContainerInstance')),
+        'sk': DynamoAttributeValue.fromString('instance'),
+      },
+      resultSelector: {
+        'item': JsonPath.objectAt('$.Item')
+      },
+      resultPath: '$.instance'
+    })
+
+    const updateDDB = new DynamoUpdateItem(this, 'DDBPutItemEC2', {
+      stateName: 'Update DDB (EC2 Job)',
+      comment: 'Update the job status in DDB',
+      table: metadataTable,
+      key: {
+        'pk': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_id')),
+        'sk': DynamoAttributeValue.fromString('job')
+      },
+      updateExpression: [
+        'SET platform = :platform',
+        'job_status = :job_status',
+        'started_at = :started_at',
+        'cpu = :cpu',
+        'memory = :memory',
+        'os = :os',
+        'arch = :arch',
+        'instance = :c_inst'
+      ].join(', '),
+      expressionAttributeValues: {
+        ':platform': DynamoAttributeValue.fromString('EC2'),
+        ':job_status': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_status')),
+        ':started_at': DynamoAttributeValue.fromString(JsonPath.format('{}', JsonPath.stringAt('$.detail.startedAt'))),
+        ':cpu': DynamoAttributeValue.numberFromString(JsonPath.format('{}', JsonPath.arrayGetItem(JsonPath.stringAt('$.ec2Subset.cpu'), 0))),
+        ':memory': DynamoAttributeValue.numberFromString(JsonPath.format('{}', JsonPath.arrayGetItem(JsonPath.stringAt('$.ec2Subset.memory'), 0))),
+        ':os': DynamoAttributeValue.fromString(JsonPath.stringAt('$.instance.item.os.S')),
+        ':arch': DynamoAttributeValue.fromString(JsonPath.stringAt('$.instance.item.arch.S')),
+        ':c_inst': DynamoAttributeValue.fromString(JsonPath.stringAt('$.instance.item.pk.S')),
+      },
+    })
+
+    return filter
+      .next(getEC2Instance)
+      .next(updateDDB)
 
   }
 
