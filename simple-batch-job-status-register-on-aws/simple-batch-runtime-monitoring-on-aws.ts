@@ -4,14 +4,15 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { AttributeType, ITableV2, TableV2 } from 'aws-cdk-lib/aws-dynamodb';
 import { InstanceClass, Vpc } from 'aws-cdk-lib/aws-ec2';
-import { EcsEc2ContainerDefinition, EcsJobDefinition, JobQueue, ManagedEc2EcsComputeEnvironment } from 'aws-cdk-lib/aws-batch';
+import { EcsEc2ContainerDefinition, EcsFargateContainerDefinition, EcsJobDefinition, FargateComputeEnvironment, JobQueue, ManagedEc2EcsComputeEnvironment } from 'aws-cdk-lib/aws-batch';
 import { ContainerImage } from 'aws-cdk-lib/aws-ecs';
 import { join } from 'path';
 import { Rule } from 'aws-cdk-lib/aws-events';
 import { Choice, Condition, DefinitionBody, JsonPath, Pass, StateMachine, StateMachineType, Succeed } from 'aws-cdk-lib/aws-stepfunctions';
 import { SfnStateMachine } from 'aws-cdk-lib/aws-events-targets';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
-import { CallAwsService, DynamoAttributeValue, DynamoGetItem, DynamoPutItem } from 'aws-cdk-lib/aws-stepfunctions-tasks';
+import { CallAwsService, DynamoAttributeValue, DynamoGetItem, DynamoPutItem, DynamoUpdateItem } from 'aws-cdk-lib/aws-stepfunctions-tasks';
+
 
 export class SampleTestCase extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -32,14 +33,50 @@ export class SampleTestCase extends cdk.Stack {
     const jobQueue = new JobQueue(this, 'Queue', {})
     jobQueue.addComputeEnvironment(computeEnvironment, 1)
 
+    const containerImage = ContainerImage.fromAsset(join(__dirname, 'job'))
+
     const jobDef = new EcsJobDefinition(this, 'ECSJobDef', {
       container: new EcsEc2ContainerDefinition(this, 'defaultContainer', {
-        image: ContainerImage.fromAsset(join(__dirname, 'job')),
+        image: containerImage,
         memory: cdk.Size.mebibytes(2048),
         cpu: 1,
       }),
+      // propagateTags: true
     })
 
+    cdk.Tags.of(jobDef).add('monitoring_enabled', 'enabled')
+
+  }
+}
+
+
+export class SampleTestCaseFargate extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    const vpc = Vpc.fromLookup(this, 'VPC', { isDefault: true })
+
+    const computeEnvironment = new FargateComputeEnvironment(this, 'MyFargateComputeEnvironment', {
+      vpc,
+    })
+
+    cdk.Tags.of(computeEnvironment).add('RuntimeMonitoring', 'enabled')
+
+    const jobQueue = new JobQueue(this, 'FargateQueue', {})
+    jobQueue.addComputeEnvironment(computeEnvironment, 1)
+
+    const containerImage = ContainerImage.fromAsset(join(__dirname, 'job'))
+
+    const jobDefFargate = new EcsJobDefinition(this, 'FargateJobDef', {
+      container: new EcsFargateContainerDefinition(this, 'containerFargate', {
+        image: containerImage,
+        memory: cdk.Size.mebibytes(2048),
+        cpu: 1,
+        assignPublicIp: true
+      }),
+    })
+
+    cdk.Tags.of(jobDefFargate).add('monitoring_enabled', 'enabled')
 
   }
 }
@@ -165,6 +202,17 @@ export class SimpleBatchRuntimeMonitoringOnAwsStack extends cdk.Stack {
       eventPattern: {
         source: ['aws.batch'],
         detailType: ['Batch Job State Change'],
+        detail: {
+          jobQueue: [
+            'arn:aws:batch:eu-west-1:375479154925:job-queue/Queue4A7E3555-wcfVDPHGNvj2uTRD',
+            'arn:aws:batch:eu-west-1:375479154925:job-queue/FargateQueue84ABB6E7-lgVxHSH580p0wa5H'
+          ],
+          status: [
+            'RUNNING',
+            'FAILED',
+            'SUCCEEDED'
+          ]
+        }
       }
     })
 
@@ -189,7 +237,22 @@ export class SimpleBatchRuntimeMonitoringOnAwsStack extends cdk.Stack {
       resultPath: '$.subset'
     })
 
-    const stepUpdateFinishedJob = new Pass(this, 'UpdateFinishedJob')
+    // TODO - jason - think about appending the job trail instead of overriding
+    const stepUpdateFinishedJob = new DynamoUpdateItem(this, 'UpdateFinishedJob', {
+      table: metadataTable,
+      key: {
+        'pk': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_id')),
+        'sk': DynamoAttributeValue.fromString('job'),
+      },
+      updateExpression: 'SET stopped_at = :stopped_at, job_status = :job_status',
+      expressionAttributeValues: {
+        ':stopped_at': DynamoAttributeValue.fromString(JsonPath.format('{}', JsonPath.stringAt('$.subset.detail.stoppedAt'))),
+        ':job_status': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_status')),
+      }
+    })
+
+    stepUpdateFinishedJob
+      .next(succeed)
 
     const pathPlatformEC2 = new DynamoGetItem(this, 'StepPlatformEC2', {
       table: metadataTable,
@@ -224,14 +287,23 @@ export class SimpleBatchRuntimeMonitoringOnAwsStack extends cdk.Stack {
       }))
       .next(succeed)
 
-    const pathPlatformFargate = new Pass(this, 'StepPlatformFargate', {}).next(succeed)
+
+    const fargateSteps = this.createStepsFargate(metadataTable)
+
+    const pathPlatformFargate = new Pass(this, 'StepPlatformFargate', {}).next(fargateSteps).next(succeed)
+
+    const stepEC2Pass = new Pass(this, 'StepEC2Pass', {
+      parameters: {
+        'cluster': JsonPath.arrayGetItem(JsonPath.stringSplit(JsonPath.arrayGetItem(JsonPath.stringSplit(JsonPath.stringAt('$.subset.detail.container.containerInstanceArn'), ':'), 5), '/'), 1),
+      }
+    }).next(pathPlatformEC2)
 
     const stepPlatform = new Choice(this, 'StepPlatform', { comment: 'Check the platform of the job' })
     stepPlatform
     .when(
       Condition.booleanEquals('$.subset.is_fargate', true),
       pathPlatformFargate
-    ).otherwise(pathPlatformEC2)
+    ).otherwise(stepEC2Pass)
 
     const stepStatusDefault = new Choice(this, 'ChoiceStatusDefault')
 
@@ -267,11 +339,51 @@ export class SimpleBatchRuntimeMonitoringOnAwsStack extends cdk.Stack {
 
   }
 
+  createStepsFargate(metadataTable: ITableV2) {
+
+    // Filter the event for specific variables to be updated in DDB.
+    const fargateFilter = new Pass(this, 'FargateFilter', {
+      parameters: {
+        'cpu': JsonPath.stringAt("$.detail.container.resourceRequirements[?(@.type=='VCPU')].value"),
+        'memory': JsonPath.stringAt("$.detail.container.resourceRequirements[?(@.type=='MEMORY')].value"),
+        'runtime': JsonPath.objectAt("$.detail.container.runtimePlatform"),
+      },
+      resultPath: '$.fargateSubset'
+    })
+
+    // TODO: <jason> Add more details about the fargate lifecycle.
+    const updateDDB = new DynamoUpdateItem(this, 'DDBPutItemFargate', {
+      stateName: 'Update DDB Fargate',
+      comment: 'Update the task status in DDB',
+      table: metadataTable,
+      key: {
+        'pk': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_id')),
+        'sk': DynamoAttributeValue.fromString('job')
+      },
+      updateExpression: 'SET platform = :platform, job_status = :job_status, started_at = :started_at, cpu = :cpu, memory = :memory, runtime = :runtime',
+      expressionAttributeValues: {
+        ':platform': DynamoAttributeValue.fromString('FARGATE'),
+        ':job_status': DynamoAttributeValue.fromString(JsonPath.stringAt('$.subset.job_status')),
+        ':started_at': DynamoAttributeValue.fromString(JsonPath.format('{}', JsonPath.stringAt('$.detail.startedAt'))),
+        ':cpu': DynamoAttributeValue.numberFromString(JsonPath.format('{}', JsonPath.arrayGetItem(JsonPath.stringAt('$.fargateSubset.cpu'), 0))),
+        ':memory': DynamoAttributeValue.numberFromString(JsonPath.format('{}', JsonPath.arrayGetItem(JsonPath.stringAt('$.fargateSubset.memory'), 0))),
+        ':runtime': DynamoAttributeValue.mapFromJsonPath('$.fargateSubset.runtime'),
+      },
+    })
+
+    return fargateFilter.next(updateDDB)
+
+  }
+
 }
 
 const app = new cdk.App();
 
 new SampleTestCase(app, 'SimpleBatchRuntimeMonitoringStackTestCase', {
+  env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
+});
+
+new SampleTestCaseFargate(app, 'SimpleBatchRuntimeMonitoringStackTestCaseFargate', {
   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
 });
 
