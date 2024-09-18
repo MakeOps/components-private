@@ -22,7 +22,7 @@ export class SampleTestCase extends cdk.Stack {
 
     const computeEnvironment = new ManagedEc2EcsComputeEnvironment(this, 'MyECSComputeEnvironment', {
       vpc,
-      minvCpus: 1,
+      minvCpus: 0,
       maxvCpus: 8,
       instanceClasses: [InstanceClass.M5],
       useOptimalInstanceClasses: false,
